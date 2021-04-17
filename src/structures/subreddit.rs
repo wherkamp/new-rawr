@@ -10,6 +10,8 @@ use crate::structures::listing::PostStream;
 use hyper::Body;
 use crate::structures::user::UserListing;
 use std::error::Error;
+use serde_json::Value;
+use std::str::FromStr;
 
 /// The `Subreddit` struct represents a subreddit and allows access to post listings
 /// and data about the subreddit.
@@ -191,14 +193,16 @@ impl<'a> Subreddit<'a> {
         self.client.post_success("/api/submit", &body, false)
     }
     /// Invites a new member to the subreddit.
-    pub fn invite_member(&self, username: String) -> Result<(), APIError> {
+    pub fn invite_member(&self, username: String) -> Result<bool, APIError> {
         let path = format!("/r/{}/api/friend", self.name);
         let body = format!("name={}&type=contributor", username);
         let result = self.client.post_json(&*path, &body, false);
         if result.is_err() {
             return Err(result.err().unwrap());
         }
-        Ok(())
+        let value: Value = serde_json::from_str(&*result.unwrap()).unwrap();
+        let x = value["success"].as_bool().unwrap();
+        Ok(x)
     }
 
     /// Fetches information about a subreddit such as subscribers, active users and sidebar
@@ -225,12 +229,12 @@ impl<'a> Subreddit<'a> {
         let url = format!("/r/{}/about/contributors?raw_json=1", self.name);
         let string = self.client
             .get_json(&url, false).unwrap();
-        let json: Result<listing::UserListing,  serde_json::Error> = serde_json::from_str(string.as_str());
+        let json: Result<listing::UserListing, serde_json::Error> = serde_json::from_str(string.as_str());
         if json.is_err() {
             println!("{}", &json.err().unwrap().to_string());
             return Err(APIError::ExhaustedListing);
-        }else {
-           return Ok(UserListing::new(self.client, url, json.unwrap()));
+        } else {
+            return Ok(UserListing::new(self.client, url, json.unwrap()));
         }
     }
     /// Subscribes to the specified subredit, returning the result to show whether the API call
