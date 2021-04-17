@@ -155,6 +155,7 @@ impl Authenticator for PasswordAuthenticator {
             .header(USER_AGENT, user_agent)
             .body(Body::from(body));
         if request.is_err() {
+            println!("{}", request.err().unwrap().to_string());
             return Err(APIError::ExhaustedListing);
         }
         let request = request.unwrap();
@@ -162,6 +163,7 @@ impl Authenticator for PasswordAuthenticator {
         let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
         let mut result = runtime.block_on(client.request(request));
         if result.is_err() {
+            println!("{}", result.err().unwrap().to_string());
             return Err(APIError::ExhaustedListing);
         }
         let result = result.unwrap();
