@@ -8,6 +8,7 @@ use crate::traits::{Created, PageListing};
 use crate::errors::APIError;
 use crate::structures::comment_list::CommentList;
 use crate::responses::comment::CommentListing;
+use std::error::Error;
 
 /// Interface to a Reddit user, which can be used to access their karma and moderator status.
 pub struct User<'a> {
@@ -110,9 +111,12 @@ impl UserAbout {
     pub fn new(client: &RedditClient, name: String) -> Result<UserAbout, APIError> {
         let url = format!("/user/{}/about?raw_json=1", name);
         let result = client.get_json(&url, false).unwrap();
-        let result: UserAboutDataCore = serde_json::from_str(&*result).unwrap();
+        let result: Result<UserAboutDataCore, serde_json::Error> = serde_json::from_str(&*result);
+        if result.is_err(){
+            return Err(APIError::JSONError(result.err().unwrap()));
+        }
         Ok(UserAbout {
-            data: result.data
+            data: result.unwrap().data
         })
     }
 
