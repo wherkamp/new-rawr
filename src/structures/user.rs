@@ -110,9 +110,13 @@ impl UserAbout {
     /// Internal method. Use `RedditClient.user(NAME).about()` instead.
     pub fn new(client: &RedditClient, name: String) -> Result<UserAbout, APIError> {
         let url = format!("/user/{}/about?raw_json=1", name);
-        let result = client.get_json(&url, false).unwrap();
+        let result1 = client.get_json(&url, false);
+        if result1.is_err() {
+            return Err(result1.err().unwrap());
+        }
+        let result = result1.unwrap();
         let result: Result<UserAboutDataCore, serde_json::Error> = serde_json::from_str(&*result);
-        if result.is_err(){
+        if result.is_err() {
             return Err(APIError::JSONError(result.err().unwrap()));
         }
         Ok(UserAbout {
