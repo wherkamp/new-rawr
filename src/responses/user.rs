@@ -15,7 +15,7 @@ pub struct UserAboutDataCore {
 pub struct UserAboutData {
     pub name: String,
     pub snoovatar_img: Option<String>,
-    pub icon_img: String,
+    pub icon_img: Option<String>,
     pub is_friend: bool,
     pub hide_from_robots: bool,
     pub id: String,
