@@ -8,10 +8,11 @@ use crate::errors::APIError;
 use crate::structures::user::User;
 use crate::structures::subreddit::Subreddit;
 use crate::responses::comment::{CommentData, NewComment};
-use crate::structures::comment_list::{CommentList, CommentStream};
+use crate::structures::comment_list::{CommentList};
 use crate::structures::listing::Listing;
 use crate::structures::comment::Comment;
 use crate::responses::listing::CommentResponse;
+use async_trait::async_trait;
 
 /// Structure representing a link post or self post (a submission) on Reddit.
 pub struct Submission<'a> {
@@ -26,7 +27,7 @@ impl<'a> PartialEq for Submission<'a> {
     }
 }
 
-
+#[async_trait]
 impl<'a> Votable for Submission<'a> {
     fn score(&self) -> i64 {
         self.data.score
@@ -36,16 +37,16 @@ impl<'a> Votable for Submission<'a> {
         self.data.likes
     }
 
-    fn upvote(&self) -> Result<(), APIError> {
-        self.vote(1)
+    async fn upvote(&self) -> Result<(), APIError> {
+        self.vote(1).await
     }
 
-    fn downvote(&self) -> Result<(), APIError> {
-        self.vote(-1)
+    async fn downvote(&self) -> Result<(), APIError> {
+        self.vote(-1).await
     }
 
-    fn cancel_vote(&self) -> Result<(), APIError> {
-        self.vote(0)
+    async fn cancel_vote(&self) -> Result<(), APIError> {
+        self.vote(0).await
     }
 }
 
@@ -59,6 +60,7 @@ impl<'a> Created for Submission<'a> {
     }
 }
 
+#[async_trait]
 impl<'a> Editable for Submission<'a> {
     fn edited(&self) -> bool {
         self.data.edited.as_bool().unwrap()
@@ -68,11 +70,11 @@ impl<'a> Editable for Submission<'a> {
         self.data.edited.as_i64()
     }
 
-    fn edit(&mut self, text: &str) -> Result<(), APIError> {
+    async fn edit(&mut self, text: &str) -> Result<(), APIError> {
         let body = format!("api_type=json&text={}&thing_id={}",
                            self.client.url_escape(text.to_owned()),
                            self.data.name);
-        let res = self.client.post_success("/api/editusertext", &body, false);
+        let res = self.client.post_success("/api/editusertext", &body, false).await;
         if let Ok(()) = res {
             // TODO: should we update selftext_html?
             self.data.selftext = text.to_owned();
@@ -94,6 +96,7 @@ impl<'a> Editable for Submission<'a> {
     }
 }
 
+#[async_trait]
 impl<'a> Content for Submission<'a> {
     fn author(&self) -> User {
         User::new(self.client, &self.data.author)
@@ -111,7 +114,7 @@ impl<'a> Content for Submission<'a> {
         Subreddit::create_new(self.client, &self.data.subreddit)
     }
 
-    fn delete(self) -> Result<(), APIError> {
+    async fn delete(self) -> Result<(), APIError> {
         let body = format!("id={}", self.data.name);
         self.client.post_success("/api/del", &body, false)
     }
@@ -120,48 +123,50 @@ impl<'a> Content for Submission<'a> {
     }
 }
 
+#[async_trait]
 impl<'a> Approvable for Submission<'a> {
-    fn approve(&self) -> Result<(), APIError> {
+    async fn approve(&self) -> Result<(), APIError> {
         let body = format!("id={}", self.data.name);
-        self.client.post_success("/api/approve", &body, false)
+        self.client.post_success("/api/approve", &body, false).await
     }
 
-    fn remove(&self, spam: bool) -> Result<(), APIError> {
+    async fn remove(&self, spam: bool) -> Result<(), APIError> {
         let body = format!("id={}&spam={}", self.data.name, spam);
-        self.client.post_success("/api/remove", &body, false)
+        self.client.post_success("/api/remove", &body, false).await
     }
 
-    fn ignore_reports(&self) -> Result<(), APIError> {
+    async fn ignore_reports(&self) -> Result<(), APIError> {
         let body = format!("id={}", self.data.name);
-        self.client.post_success("/api/ignore_reports", &body, false)
+        self.client.post_success("/api/ignore_reports", &body, false).await
     }
 
-    fn unignore_reports(&self) -> Result<(), APIError> {
+    async fn unignore_reports(&self) -> Result<(), APIError> {
         let body = format!("id={}", self.data.name);
-        self.client.post_success("/api/unignore_reports", &body, false)
+        self.client.post_success("/api/unignore_reports", &body, false).await
     }
 }
 
+#[async_trait]
 impl<'a> Commentable<'a> for Submission<'a> {
     fn reply_count(&self) -> u64 {
         self.data.num_comments
     }
 
-    fn reply(&self, text: &str) -> Result<Comment, APIError> {
+    async fn reply(&self, text: &str) -> Result<Comment, APIError> {
         let body = format!("api_type=json&text={}&thing_id={}",
                            self.client.url_escape(text.to_owned()),
                            self.name());
         //
-        let result = self.client.post_json("/api/comment", &body, false).unwrap();
+        let result = self.client.post_json("/api/comment", &body, false).await.unwrap();
         let result: NewComment = serde_json::from_str(&*result).unwrap();
 
         Ok(Comment::new(self.client, result.json.data.things.into_iter().next().unwrap().data))
     }
 
-    fn replies(self) -> Result<CommentList<'a>, APIError> {
+    async fn replies(self) -> Result<CommentList<'a>, APIError> {
         // TODO: sort type
         let url = format!("/comments/{}", self.data.id);
-        let result = self.client.get_json(&url, false).unwrap();
+        let result = self.client.get_json(&url, false).await.unwrap();
         let result: listing::CommentResponse = serde_json::from_str(&*result).unwrap();
 
         Ok(CommentList::new(self.client,
@@ -180,22 +185,6 @@ impl<'a> Submission<'a> {
         }
     }
 
-    /// Returns a `CommentStream` that fetches the latest comments in an infinite loop and returns
-    /// it from the iterator. Comments will be ordered from oldest to newest, with up to 5 comments
-    /// that exist being yielded at a time. This will poll the API every 5 seconds for updates.
-    /// # Examples
-    /// ```ignore
-    ///
-    /// let client = RedditClient::new("new_rawr", AnonymousAuthenticator::new());
-    /// let sub = client.subreddit("all");
-    /// let mut listing = sub.hot(ListingOptions::default()).expect("Could not fetch listing!");
-    /// let post = listing.nth(0).unwrap();
-    /// for comment in post.reply_stream() {
-    ///     println!("New comment received!");
-    /// }
-    pub fn reply_stream(self) -> CommentStream<'a> {
-        CommentStream::new(self.client, self.data.name, self.data.id)
-    }
 
     /// The title of the post (as an &str). All link and self posts have a title, and any post
     /// flairs are not included in this.
@@ -220,9 +209,9 @@ impl<'a> Submission<'a> {
 
     /// Sets the post as NSFW (over 18) if you have the correct privileges (owner of the post or
     /// moderator) **and** the subreddit allows NSFW posts.
-    pub fn mark_nsfw(&mut self) -> Result<(), APIError> {
+    pub async fn mark_nsfw(&mut self) -> Result<(), APIError> {
         let body = format!("id={}", self.data.name);
-        let res = self.client.post_success("/api/marknsfw", &body, false);
+        let res = self.client.post_success("/api/marknsfw", &body, false).await;
 
         if let Ok(_) = res {
             self.data.over_18 = true;
@@ -232,9 +221,9 @@ impl<'a> Submission<'a> {
     }
 
     /// Sets the post as **not** NSFW (over 18).
-    pub fn unmark_nsfw(&mut self) -> Result<(), APIError> {
+    pub async fn unmark_nsfw(&mut self) -> Result<(), APIError> {
         let body = format!("id={}", self.data.name);
-        let res = self.client.post_success("/api/unmarknsfw", &body, false);
+        let res = self.client.post_success("/api/unmarknsfw", &body, false).await;
 
         if let Ok(_) = res {
             self.data.over_18 = false;
@@ -243,21 +232,22 @@ impl<'a> Submission<'a> {
         res
     }
 
-    fn vote(&self, dir: i8) -> Result<(), APIError> {
+    async fn vote(&self, dir: i8) -> Result<(), APIError> {
         let body = format!("dir={}&id={}", dir, self.data.name);
-        self.client.post_success("/api/vote", &body, false)
+        self.client.post_success("/api/vote", &body, false).await
     }
 }
 
+#[async_trait]
 impl<'a> Stickable for Submission<'a> {
     /// This is `true` if the post is stickied (an announcement post).
     fn stickied(&self) -> bool {
         self.data.stickied
     }
 
-    fn stick(&mut self) -> Result<(), APIError> {
+    async fn stick(&mut self) -> Result<(), APIError> {
         let body = format!("api_type=json&id={}&state=true", self.data.name);
-        let res = self.client.post_success("/api/set_subreddit_sticky", &body, false);
+        let res = self.client.post_success("/api/set_subreddit_sticky", &body, false).await;
 
         if let Ok(_) = res {
             self.data.stickied = true;
@@ -266,9 +256,9 @@ impl<'a> Stickable for Submission<'a> {
         res
     }
 
-    fn unstick(&mut self) -> Result<(), APIError> {
+    async fn unstick(&mut self) -> Result<(), APIError> {
         let body = format!("api_type=json&id={}&state=false", self.data.name);
-        let res = self.client.post_success("/api/set_subreddit_sticky", &body, false);
+        let res = self.client.post_success("/api/set_subreddit_sticky", &body, false).await;
 
         if let Ok(_) = res {
             self.data.stickied = false;
@@ -278,14 +268,15 @@ impl<'a> Stickable for Submission<'a> {
     }
 }
 
+#[async_trait]
 impl<'a> Lockable for Submission<'a> {
     fn locked(&self) -> bool {
         self.data.locked
     }
 
-    fn lock(&mut self) -> Result<(), APIError> {
+    async fn lock(&mut self) -> Result<(), APIError> {
         let body = format!("id={}", self.data.name);
-        let res = self.client.post_success("/api/lock", &body, false);
+        let res = self.client.post_success("/api/lock", &body, false).await;
 
         if let Ok(_) = res {
             self.data.locked = true;
@@ -294,9 +285,9 @@ impl<'a> Lockable for Submission<'a> {
         res
     }
 
-    fn unlock(&mut self) -> Result<(), APIError> {
+    async fn unlock(&mut self) -> Result<(), APIError> {
         let body = format!("id={}", self.data.name);
-        let res = self.client.post_success("/api/unlock", &body, false);
+        let res = self.client.post_success("/api/unlock", &body, false).await;
 
         if let Ok(_) = res {
             self.data.locked = false;
@@ -306,12 +297,13 @@ impl<'a> Lockable for Submission<'a> {
     }
 }
 
+#[async_trait]
 impl<'a> Reportable for Submission<'a> {
-    fn report(&self, reason: &str) -> Result<(), APIError> {
+    async fn report(&self, reason: &str) -> Result<(), APIError> {
         let body = format!("api_type=json&thing_id={}&reason={}",
                            self.data.name,
                            self.client.url_escape(reason.to_owned()));
-        self.client.post_success("/api/report", &body, false)
+        self.client.post_success("/api/report", &body, false).await
     }
 
     fn report_count(&self) -> Option<u64> {
@@ -319,23 +311,24 @@ impl<'a> Reportable for Submission<'a> {
     }
 }
 
+#[async_trait]
 impl<'a> Distinguishable for Submission<'a> {
     fn distinguished(&self) -> Option<String> {
         self.data.distinguished.to_owned()
     }
 
-    fn distinguish(&mut self) -> Result<(), APIError> {
+    async fn distinguish(&mut self) -> Result<(), APIError> {
         let body = format!("api_type=json&how=yes&id={}", self.data.name);
-        let res = self.client.post_success("/api/distinguish", &body, false);
+        let res = self.client.post_success("/api/distinguish", &body, false).await;
         if let Ok(()) = res {
             self.data.distinguished = Some(String::from("moderator"));
         }
         res
     }
 
-    fn undistinguish(&mut self) -> Result<(), APIError> {
+    async fn undistinguish(&mut self) -> Result<(), APIError> {
         let body = format!("api_type=json&how=no&id={}", self.data.name);
-        let res = self.client.post_success("/api/distinguish", &body, false);
+        let res = self.client.post_success("/api/distinguish", &body, false).await;
         if let Ok(()) = res {
             self.data.distinguished = None;
         }
@@ -343,6 +336,7 @@ impl<'a> Distinguishable for Submission<'a> {
     }
 }
 
+#[async_trait]
 impl<'a> Flairable for Submission<'a> {
     fn get_flair_text(&self) -> Option<String> {
         self.data.link_flair_text.to_owned()
@@ -352,32 +346,33 @@ impl<'a> Flairable for Submission<'a> {
         self.data.link_flair_css_class.to_owned()
     }
 
-    fn flair_options(&self) -> Result<FlairList, APIError> {
+    async fn flair_options(&self) -> Result<FlairList, APIError> {
         let body = format!("link={}", self.data.name);
         let url = format!("/r/{}/api/flairselector", self.data.subreddit);
         let result = self.client
-            .post_json(&url, &body, false).unwrap();
+            .post_json(&url, &body, false).await.unwrap();
         let result: FlairSelectorResponse = serde_json::from_str(&*result).unwrap();
         Ok(FlairList::new(result.choices))
     }
 
-    fn flair(&self, template: &str) -> Result<(), APIError> {
+    async fn flair(&self, template: &str) -> Result<(), APIError> {
         let body = format!("api_type=json&link={}&flair_template_id={}",
                            self.data.name,
                            template);
         let url = format!("/r/{}/api/selectflair", self.data.subreddit);
-        self.client.post_success(&url, &body, false)
+        self.client.post_success(&url, &body, false).await
     }
 }
 
+#[async_trait]
 impl<'a> Visible for Submission<'a> {
     fn hidden(&self) -> bool {
         self.data.hidden
     }
 
-    fn hide(&mut self) -> Result<(), APIError> {
+    async fn hide(&mut self) -> Result<(), APIError> {
         let body = format!("id={}", self.data.name);
-        let res = self.client.post_success("/api/hide", &body, false);
+        let res = self.client.post_success("/api/hide", &body, false).await;
 
         if let Ok(_) = res {
             self.data.hidden = true;
@@ -386,9 +381,9 @@ impl<'a> Visible for Submission<'a> {
         res
     }
 
-    fn show(&mut self) -> Result<(), APIError> {
+    async fn show(&mut self) -> Result<(), APIError> {
         let body = format!("id={}", self.data.name);
-        let res = self.client.post_success("/api/unhide", &body, false);
+        let res = self.client.post_success("/api/unhide", &body, false).await;
 
         if let Ok(_) = res {
             self.data.hidden = false;
@@ -465,11 +460,11 @@ impl<'a> LazySubmission<'a> {
     }
 
     /// Fetches a `CommentList` with replies to this submission.
-    pub fn replies(self) -> Result<CommentList<'a>, APIError> {
+    pub async fn replies(self) -> Result<CommentList<'a>, APIError> {
         let url = format!("/comments/{}?raw_json=1", self.id.split('_').nth(1).unwrap());
         let string = self.client
-            .get_json(&url, false).unwrap();
-        let string :listing::CommentResponse =serde_json::from_str(&*string).unwrap();
+            .get_json(&url, false).await.unwrap();
+        let string: listing::CommentResponse = serde_json::from_str(&*string).unwrap();
         Ok(CommentList::new(self.client,
                             self.id.to_owned(),
                             self.id.to_owned(),

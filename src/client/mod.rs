@@ -50,6 +50,7 @@ use crate::structures::messages::MessageInterface;
 use crate::structures::submission::LazySubmission;
 use crate::structures::subreddit::Subreddit;
 use crate::structures::user::User;
+use hyper::body::Buf;
 
 /// A client to connect to Reddit. See the module-level documentation for examples.
 pub struct RedditClient {
@@ -64,9 +65,9 @@ pub struct RedditClient {
 
 impl RedditClient {
     /// Creates an instance of the `RedditClient` using the provided user agent.
-    pub fn new(user_agent: &str,
-               authenticator: Arc<Mutex<Box<dyn Authenticator + Send>>>)
-               -> RedditClient {
+    pub async fn new(user_agent: &str,
+                     authenticator: Arc<Mutex<Box<dyn Authenticator + Send>>>)
+                     -> RedditClient {
         // Connection pooling is problematic if there are pauses/sleeps in the program, so we
         // choose to disable it by using a non-pooling connector.
         let https = HttpsConnector::new();
@@ -79,7 +80,7 @@ impl RedditClient {
         };
 
         this.get_authenticator()
-            .login(&this.client, &this.user_agent)
+            .login(&this.client, &this.user_agent).await
             .expect("Authentication failed. Did you use the correct username/password?");
         this
     }
@@ -101,20 +102,11 @@ impl RedditClient {
         self.auto_logout = val;
     }
 
-    /// Runs the lambda passed in. Refreshes the access token if it fails due to an HTTP 401
-    /// Unauthorized error, then reruns the lambda. If the lambda fails twice, or fails due to
-    /// a different error, the error is returned.
-    pub fn ensure_authenticated<F, T>(&self, lambda: F) -> Result<T, APIError>
-        where F: Fn() -> Result<T, APIError>
-    {
-        let res = lambda();
-        match res {
-            Err(APIError::HTTPError(StatusCode::UNAUTHORIZED)) => {
-                self.get_authenticator().refresh_token(&self.client, &self.user_agent).expect("Authentication failed. Did you use the correct username/password?");
-                ;
-                lambda()
-            }
-            _ => res,
+    /// Checks if the time is over refresh.
+    /// If the token was revoked for another reason an error will be thrown in the code later.
+    pub async fn ensure_authenticated(&self) {
+        if self.get_authenticator().needs_token_refresh() {
+            self.get_authenticator().refresh_token(&self.client, &*self.user_agent).await;
         }
     }
 
@@ -164,13 +156,8 @@ impl RedditClient {
 
         let mut builder = (Builder::new());
         let mut headers = authenticator.headers();
-        if headers.is_err() {
-            if headers.err().unwrap().to_string().eq("ExpiredToken") {
-                authenticator.login(&self.client, &*self.user_agent).expect("Authentication failed. Did you use the correct username/password?");
-            }
-        }
-        headers = authenticator.headers();
-        for x in headers.unwrap() {
+
+        for x in headers {
             builder = builder.header(x.0, x.1);
         }
         builder.method(Method::GET).uri(url).header(USER_AGENT, self.user_agent.to_owned())
@@ -178,20 +165,18 @@ impl RedditClient {
 
     /// Sends a GET request with the specified parameters, and returns the resulting
     /// deserialized object.
-    pub fn get_json(&self, dest: &str, oauth_required: bool) -> Result<String, APIError> {
-        self.ensure_authenticated(|| {
-            let request = self.get(dest, oauth_required).body(Body::empty()).unwrap();
+    pub async fn get_json(&self, dest: &str, oauth_required: bool) -> Result<String, APIError> {
+        self.ensure_authenticated().await;
+        let request = self.get(dest, oauth_required).body(Body::empty()).unwrap();
 
-            let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
 
-            let response = runtime.block_on(self.client.request(request)).unwrap();
-            if response.status().is_success() {
-                let value = runtime.block_on(hyper::body::to_bytes(response.into_body()));
-                Ok(String::from_utf8(value.unwrap().to_vec()).unwrap().parse().unwrap())
-            } else {
-                Err(APIError::HTTPError(response.status()))
-            }
-        })
+        let response = self.client.request(request).await.unwrap();
+        if response.status().is_success() {
+            let value = hyper::body::to_bytes(response.into_body()).await;
+            Ok(String::from_utf8(value.unwrap().to_vec()).unwrap().parse().unwrap())
+        } else {
+            Err(APIError::HTTPError(response.status()))
+        }
     }
 
     /// Wrapper around the `post` function of `hyper::client::Client`, which sends a HTTP POST
@@ -202,13 +187,8 @@ impl RedditClient {
         let url = self.build_url(dest, oauth_required, &mut authenticator);
         let mut builder = Request::builder().method(Method::POST).uri(url);
         let mut headers = authenticator.headers();
-        if headers.is_err() {
-            if headers.err().unwrap().to_string().eq("ExpiredToken") {
-                authenticator.login(&self.client, &*self.user_agent);
-            }
-        }
-        headers = authenticator.headers();
-        for x in headers.unwrap() {
+
+        for x in headers {
             builder = builder.header(x.0, x.1);
         }
         builder.header(USER_AGENT, self.user_agent.to_owned())
@@ -216,42 +196,39 @@ impl RedditClient {
 
     /// Sends a post request with the specified parameters, and converts the resulting JSON
     /// into a deserialized object.
-    pub fn post_json(&self, dest: &str, body: &str, oauth_required: bool) -> Result<String, APIError> {
-        self.ensure_authenticated(|| {
-            let request = self.post(dest, oauth_required).body(Body::from(body.to_string())).unwrap();
+    pub async fn post_json(&self, dest: &str, body: &str, oauth_required: bool) -> Result<String, APIError> {
+        self.ensure_authenticated().await;
+        let request = self.post(dest, oauth_required).body(Body::from(body.to_string())).unwrap();
 
-            let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
 
-            let response = runtime.block_on(self.client.request(request)).unwrap();
-            let status = response.status();
-            if status.is_success() {
-                let value = runtime.block_on(hyper::body::to_bytes(response.into_body()));
-                Ok(String::from_utf8(value.unwrap().to_vec()).unwrap().parse().unwrap())
-            } else {
-                Err(APIError::HTTPError(status))
-            }
-        })
+        let response = self.client.request(request).await.unwrap();
+        let status = response.status();
+        if status.is_success() {
+            let value = hyper::body::to_bytes(response.into_body()).await;
+            Ok(String::from_utf8(value.unwrap().to_vec()).unwrap().parse().unwrap())
+        } else {
+            Err(APIError::HTTPError(status))
+        }
     }
 
     /// Sends a post request with the specified parameters, and ensures that the response
     /// has a success header (HTTP 2xx).
-    pub fn post_success(&self,
-                        dest: &str,
-                        body: &str,
-                        oauth_required: bool)
-                        -> Result<(), APIError> {
-        self.ensure_authenticated(|| {
-            let request = self.post(dest, oauth_required).body(Body::from(body.to_string())).unwrap();
+    pub async fn post_success(&self,
+                              dest: &str,
+                              body: &str,
+                              oauth_required: bool)
+                              -> Result<(), APIError> {
+        self.ensure_authenticated().await;
+        let request = self.post(dest, oauth_required).body(Body::from(body.to_string())).unwrap();
 
-            let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
+        let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
 
-            let response = runtime.block_on(self.client.request(request)).unwrap();
-            if response.status().is_success() {
-                Ok(())
-            } else {
-                Err(APIError::HTTPError(response.status()))
-            }
-        })
+        let response = runtime.block_on(self.client.request(request)).unwrap();
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            Err(APIError::HTTPError(response.status()))
+        }
     }
 
     /// URL encodes the specified string so that it can be sent in GET and POST requests.
@@ -320,10 +297,9 @@ impl RedditClient {
 impl Drop for RedditClient {
     fn drop(&mut self) {
         if self.auto_logout {
-            let result = self.get_authenticator().logout(&self.client, &self.user_agent);
-            if result.is_err() {
-                println!("{}", result.err().unwrap());
-            }
+            let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
+
+            let result = runtime.block_on(self.get_authenticator().logout(&self.client, &self.user_agent));
         }
     }
 }

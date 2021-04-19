@@ -235,15 +235,19 @@ mod tests {
 
     #[test]
     fn hot_length() {
-        let client = RedditClient::new("new_rawr", AnonymousAuthenticator::new());
+        let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
+        let client = runtime.block_on(RedditClient::new("new_rawr", AnonymousAuthenticator::new()));
         let r_all = client.subreddit("all");
         let hot = r_all.hot(ListingOptions::default()).expect("Request failed!");
         let hot_list = hot.take(26).collect::<Vec<Submission>>();
         assert_eq!(hot_list.len() as usize, 26);
     }
+
     #[test]
     fn user_data_test() {
-        let client = RedditClient::new("new_rawr", AnonymousAuthenticator::new());
+        let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
+
+        let client = runtime.block_on(RedditClient::new("new_rawr", AnonymousAuthenticator::new()));
         let user = client.user("KingTuxWH");
         assert_eq!(user.about().unwrap().data.name, "KingTuxWH");
         let user = client.user("KingTuxWH");
@@ -258,6 +262,8 @@ mod tests {
     #[test]
     #[ignore]
     fn test_invite() {
+        let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
+
         println!("1");
         dotenv().ok();
         println!("1");
@@ -266,7 +272,7 @@ mod tests {
             dotenv::var("CLIENT_SECRET").unwrap().as_str(),
             dotenv::var("USER").unwrap().as_str(),
             dotenv::var("PASSWORD").unwrap().as_str());
-        let client = RedditClient::new("new_rawr", arc);
+        let client =  runtime.block_on(RedditClient::new("new_rawr", arc));
 
         println!("1");
         println!("Hey2");
@@ -277,5 +283,4 @@ mod tests {
             println!("{}", result.err().unwrap());
         }
     }
-
 }

@@ -9,6 +9,7 @@ use crate::errors::APIError;
 use crate::structures::comment_list::CommentList;
 use crate::responses::comment::CommentListing;
 use std::error::Error;
+use async_trait::async_trait;
 
 /// Interface to a Reddit user, which can be used to access their karma and moderator status.
 pub struct User<'a> {

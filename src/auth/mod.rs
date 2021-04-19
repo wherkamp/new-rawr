@@ -69,39 +69,44 @@ use std::collections::HashMap;
 use hyper_tls::HttpsConnector;
 use std::time::{SystemTime, UNIX_EPOCH};
 use futures::future::ok;
+use async_trait::async_trait;
 
 /// Trait for any method of authenticating with the Reddit API.
+#[async_trait]
 pub trait Authenticator {
     /// Logs in and fetches relevant tokens.
-    fn login(&mut self, client: &Client<HttpsConnector<HttpConnector>>, user_agent: &str) -> Result<(), APIError>;
+    async fn login(&mut self, client: &Client<HttpsConnector<HttpConnector>>, user_agent: &str) -> Result<(), APIError>;
     /// Called if a token expiration error occurs.
-    fn refresh_token(&mut self, client: &Client<HttpsConnector<HttpConnector>>, user_agent: &str) -> Result<(), APIError> {
-        self.login(client, user_agent)
+    async fn refresh_token(&mut self, client: &Client<HttpsConnector<HttpConnector>>, user_agent: &str) -> Result<(), APIError> {
+        self.login(client, user_agent).await
     }
     /// Logs out and invalidates tokens if applicable.
-    fn logout(&mut self, client: &Client<HttpsConnector<HttpConnector>>, user_agent: &str) -> Result<(), APIError>;
+    async fn logout(&mut self, client: &Client<HttpsConnector<HttpConnector>>, user_agent: &str) -> Result<(), APIError>;
     /// A list of OAuth scopes that this `Authenticator` can access. Currently, the result of this
     /// is not used, but the correct scopes should be returned. If all scopes can be accessed,
     /// this is signified by a vec!["*"]. If it is read-only, the result is vec!["read"].
     fn scopes(&self) -> Vec<String>;
     /// Returns the headers needed to authenticate. Must be done **after** `login()`.
-    fn headers(&self) -> Result<HashMap<HeaderName, String>, APIError>;
+    fn headers(&self) -> HashMap<HeaderName, String>;
     /// `true` if this authentication method requires the OAuth API.
     fn oauth(&self) -> bool;
+    /// needs re-login
+    fn needs_token_refresh(&self) -> bool;
 }
 
 /// An anonymous login authenticator.
 pub struct AnonymousAuthenticator;
 
+#[async_trait]
 impl Authenticator for AnonymousAuthenticator {
     #[allow(unused_variables)]
-    fn login(&mut self, client: &Client<HttpsConnector<HttpConnector>>, user_agent: &str) -> Result<(), APIError> {
+    async fn login(&mut self, client: &Client<HttpsConnector<HttpConnector>>, user_agent: &str) -> Result<(), APIError> {
         // Don't log in, because we're anonymous!
         Ok(())
     }
 
     #[allow(unused_variables)]
-    fn logout(&mut self, client: &Client<HttpsConnector<HttpConnector>>, user_agent: &str) -> Result<(), APIError> {
+    async fn logout(&mut self, client: &Client<HttpsConnector<HttpConnector>>, user_agent: &str) -> Result<(), APIError> {
         // Can't log out if we're not logged in.
         Ok(())
     }
@@ -110,12 +115,16 @@ impl Authenticator for AnonymousAuthenticator {
         vec![String::from("read")]
     }
 
-    fn headers(&self) -> Result<HashMap<HeaderName, String>, APIError> {
-        Ok(HashMap::new())
+    fn headers(&self) -> HashMap<HeaderName, String>{
+        HashMap::new()
     }
 
     fn oauth(&self) -> bool {
         false
+    }
+
+    fn needs_token_refresh(&self) -> bool {
+        return false;
     }
 }
 
@@ -143,8 +152,9 @@ pub struct PasswordAuthenticator {
     expire_time: Option<u128>,
 }
 
+#[async_trait]
 impl Authenticator for PasswordAuthenticator {
-    fn login(&mut self, client: &Client<HttpsConnector<HttpConnector>>, user_agent: &str) -> Result<(), APIError> {
+    async fn login(&mut self, client: &Client<HttpsConnector<HttpConnector>>, user_agent: &str) -> Result<(), APIError> {
         let url = "https://www.reddit.com/api/v1/access_token";
         let body = format!("grant_type=password&username={}&password={}",
                            &self.username,
@@ -160,8 +170,7 @@ impl Authenticator for PasswordAuthenticator {
         }
         let request = request.unwrap();
 
-        let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
-        let mut result = runtime.block_on(client.request(request));
+        let mut result = client.request(request).await;
         if result.is_err() {
             println!("{}", result.err().unwrap().to_string());
             return Err(APIError::ExhaustedListing);
@@ -170,7 +179,7 @@ impl Authenticator for PasswordAuthenticator {
         if result.status() != hyper::StatusCode::OK {
             Err(APIError::HTTPError(result.status()))
         } else {
-            let value = runtime.block_on(hyper::body::to_bytes(result.into_body()));
+            let value = hyper::body::to_bytes(result.into_body()).await;
 
             let value = String::from_utf8(value.unwrap().to_vec());
             let string = value.unwrap();
@@ -187,7 +196,7 @@ impl Authenticator for PasswordAuthenticator {
         }
     }
 
-    fn logout(&mut self, client: &Client<HttpsConnector<HttpConnector>>, user_agent: &str) -> Result<(), APIError> {
+    async fn logout(&mut self, client: &Client<HttpsConnector<HttpConnector>>, user_agent: &str) -> Result<(), APIError> {
         let url = "https://www.reddit.com/api/v1/revoke_token";
         let body = format!("token={}", &self.access_token.to_owned().unwrap());
         let request = Request::builder().method(Method::POST).uri(url)
@@ -197,9 +206,7 @@ impl Authenticator for PasswordAuthenticator {
             .body(Body::from(body));
 
 
-        let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
-
-        let res = runtime.block_on(client.request(request.unwrap())).unwrap();
+        let res = (client.request(request.unwrap())).await.unwrap();
 
         if !res.status().is_success() {
             Err(APIError::HTTPError(res.status()))
@@ -212,18 +219,24 @@ impl Authenticator for PasswordAuthenticator {
         vec![String::from("*")]
     }
 
-    fn headers(&self) -> Result<HashMap<HeaderName, String>, APIError> {
-        let i = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
-        if i >= self.expire_time.unwrap() {
-            return Err(APIError::ExpiredToken);
-        }
+    fn headers(&self) -> HashMap<HeaderName, String> {
+
         let mut map = HashMap::new();
         map.insert(AUTHORIZATION, format!("Bearer {}", self.access_token.to_owned().unwrap()));
-        Ok(map)
+        map
     }
 
     fn oauth(&self) -> bool {
         true
+    }
+
+    fn needs_token_refresh(&self) -> bool {
+        let i = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
+        return if self.expire_time.is_none() {
+            true
+        } else {
+            i >= self.expire_time.unwrap()
+        };
     }
 }
 

@@ -15,6 +15,7 @@ use crate::structures::subreddit::Subreddit;
 use crate::options::ListingOptions;
 use crate::responses::listing;
 use crate::responses::messages::{MessageData, MessageListingData};
+use async_trait::async_trait;
 
 /// A representation of a private message from Reddit.
 pub struct Message<'a> {

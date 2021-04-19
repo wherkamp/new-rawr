@@ -14,6 +14,10 @@ use std::io::Read;
 use crate::errors::APIError;
 use crate::traits::Content;
 use hyper::Body;
+use async_trait::async_trait;
+use futures::{Stream, StreamExt};
+use std::task::{Poll, Context};
+use std::pin::Pin;
 
 /// A list of comments that can be iterated through. Automatically fetches 'more' links when
 /// necessary until all comments have been consumed, which can lead to pauses while loading
@@ -97,54 +101,72 @@ impl<'a> CommentList<'a> {
         self.comments.push(item);
     }
 
-    fn fetch_more(&mut self, more_item: MoreData) -> CommentList<'a> {
+    async fn fetch_more(&mut self, more_item: MoreData) -> Result<CommentList<'a>, APIError> {
         let params = format!("api_type=json&raw_json=1&link_id={}&children={}",
                              &self.link_id,
                              &more_item.children.join(","));
         let url = "/api/morechildren";
-        self.client
-            .ensure_authenticated(|| {
-                let request = self.client.post(url, false).body(Body::from(params.clone())).unwrap();
+        self.client.ensure_authenticated();
+        let request = self.client.post(url, false).body(Body::from(params.clone())).unwrap();
 
-                let runtime = tokio::runtime::Runtime::new().expect("Unable to create a runtime");
 
-                let res = runtime.block_on(self.client.client.request(request)).unwrap();
-                if res.status().is_success() {
-                    // The "data" attribute is sometimes not present, so we have to unwrap it all
-                    // manually
-                    let value = runtime.block_on(hyper::body::to_bytes(res.into_body()));
+        let res = self.client.client.request(request).await.unwrap();
+        if res.status().is_success() {
+            // The "data" attribute is sometimes not present, so we have to unwrap it all
+            // manually
+            let value = hyper::body::to_bytes(res.into_body()).await;
 
-                    let value =String::from_utf8(value.unwrap().to_vec());;
-                    let mut new_listing: Value = from_str(value.unwrap().as_str()).unwrap();
-                    let new_listing = new_listing.as_object_mut().unwrap();
-                    let mut json = new_listing.remove("json").unwrap();
-                    let json = json.as_object_mut().unwrap();
-                    let data = json.remove("data");
-                    if let Some(mut data) = data {
-                        let things = data.as_object_mut().unwrap();
-                        let things = things.remove("things").unwrap();
-                        let things: Vec<BasicThing<Value>> = from_value(things).unwrap();
-                        Ok(CommentList::new(self.client,
-                                            self.link_id.to_owned(),
-                                            self.parent.to_owned(),
-                                            things))
-                    } else {
-                        Ok(CommentList::new(self.client,
-                                            self.link_id.to_owned(),
-                                            self.parent.to_owned(),
-                                            vec![]))
-                    }
-                } else {
-                    Err(APIError::HTTPError(res.status()))
-                }
-            })
-            .unwrap()
+            let value = String::from_utf8(value.unwrap().to_vec());
+
+            let mut new_listing: Value = from_str(value.unwrap().as_str()).unwrap();
+            let new_listing = new_listing.as_object_mut().unwrap();
+            let mut json = new_listing.remove("json").unwrap();
+            let json = json.as_object_mut().unwrap();
+            let data = json.remove("data");
+            if let Some(mut data) = data {
+                let things = data.as_object_mut().unwrap();
+                let things = things.remove("things").unwrap();
+                let things: Vec<BasicThing<Value>> = from_value(things).unwrap();
+                Ok(CommentList::new(self.client,
+                                    self.link_id.to_owned(),
+                                    self.parent.to_owned(),
+                                    things))
+            } else {
+                Ok(CommentList::new(self.client,
+                                    self.link_id.to_owned(),
+                                    self.parent.to_owned(),
+                                    vec![]))
+            }
+        } else {
+            Err(APIError::HTTPError(res.status()))
+        }
     }
 
     fn merge_more_comments(&mut self, list: CommentList<'a>) {
         let mut orphans: HashMap<String, Vec<Comment>> = HashMap::new();
         for item in list.comments {
             self.merge_comment(item, &mut orphans);
+        }
+    }
+    async fn next_comment(&mut self) -> Option<Comment<'a>> {
+        if self.comments.is_empty() {
+            if self.more.is_empty() {
+                None
+            } else {
+                // XXX: This code is hideous (see the fetch_more etc.) but it does work.
+                // TODO: refactor (carefully!)
+                let more_item = self.more.drain(..1).next().unwrap();
+                let mut new_listing = self.fetch_more(more_item).await.unwrap();
+                self.more.append(&mut new_listing.more);
+                // We've already consumed all of the items, so we can remove the mapping now.
+                self.comment_hashes = HashMap::new();
+                self.merge_more_comments(new_listing);
+                return self.next_comment().await
+            }
+        } else {
+            // Draining breaks the comment_hashes map!
+            let child = self.comments.drain(..1).next().unwrap();
+            Some(child)
         }
     }
 
@@ -183,102 +205,3 @@ impl<'a> CommentList<'a> {
     }
 }
 
-impl<'a> Iterator for CommentList<'a> {
-    type Item = Comment<'a>;
-    fn next(&mut self) -> Option<Comment<'a>> {
-        if self.comments.is_empty() {
-            if self.more.is_empty() {
-                None
-            } else {
-                // XXX: This code is hideous (see the fetch_more etc.) but it does work.
-                // TODO: refactor (carefully!)
-                let more_item = self.more.drain(..1).next().unwrap();
-                let mut new_listing = self.fetch_more(more_item);
-                self.more.append(&mut new_listing.more);
-                // We've already consumed all of the items, so we can remove the mapping now.
-                self.comment_hashes = HashMap::new();
-                self.merge_more_comments(new_listing);
-                self.next()
-            }
-        } else {
-            // Draining breaks the comment_hashes map!
-            let child = self.comments.drain(..1).next().unwrap();
-            Some(child)
-        }
-    }
-}
-
-/// A stream of comments from oldest to newest that updates via polling every 5 seconds.
-pub struct CommentStream<'a> {
-    client: &'a RedditClient,
-    set: VecDeque<String>,
-    current_iter: Option<IntoIter<Comment<'a>>>,
-    id: String,
-    link_name: String,
-}
-
-impl<'a> CommentStream<'a> {
-    /// Internal method. Use `Submission.reply_stream()` instead.
-    pub fn new(client: &'a RedditClient, link_name: String, id: String) -> CommentStream<'a> {
-        CommentStream {
-            set: VecDeque::new(),
-            current_iter: None,
-            client: client,
-            link_name: link_name,
-            id: id,
-        }
-    }
-}
-
-impl<'a> Iterator for CommentStream<'a> {
-    type Item = Comment<'a>;
-    fn next(&mut self) -> Option<Comment<'a>> {
-        if self.current_iter.is_some() {
-            let mut iter = self.current_iter.take().unwrap();
-            let next_iter = iter.next();
-            if next_iter.is_some() {
-                let res = next_iter.unwrap();
-                let name = res.name().to_owned();
-                // VecDeque.contains is not stable yet!
-                let mut contains = false;
-                for item in &self.set {
-                    if item == &name {
-                        contains = true;
-                    }
-                }
-                if contains {
-                    self.current_iter = Some(iter);
-                    self.next()
-                } else {
-                    self.set.push_back(name);
-                    if self.set.len() > 10 {
-                        self.set.pop_front();
-                    }
-                    self.current_iter = Some(iter);
-                    Some(res)
-                }
-            } else {
-                self.next()
-            }
-        } else {
-            thread::sleep(Duration::new(5, 0));
-            let url = format!("/comments/{}?sort=new&raw_json=1", self.id);
-            let value = self.client.get_json(&url, false);
-            if let Ok(value) = value {
-                let req: listing::CommentResponse= serde_json::from_str(&*value).unwrap();
-
-                let current_iter = CommentList::new(self.client,
-                                                    self.link_name.to_owned(),
-                                                    self.link_name.to_owned(),
-                                                    req.1.data.children)
-                    .take(5)
-                    .collect::<Vec<Comment>>()
-                    .into_iter()
-                    .rev()
-                    .collect::<Vec<Comment>>();
-                self.current_iter = Some(current_iter.into_iter());
-            }
-            self.next()
-        }
-    }
-}

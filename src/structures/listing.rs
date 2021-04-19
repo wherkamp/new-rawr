@@ -8,6 +8,7 @@ use crate::client::RedditClient;
 use crate::structures::submission::Submission;
 use crate::traits::{Content, PageListing};
 use crate::errors::APIError;
+use async_trait::async_trait;
 
 /// A paginated listing of posts that can be iterated through. Posts are fetched lazily
 /// until the listing is exhausted (similar to an infinite scroll of posts).

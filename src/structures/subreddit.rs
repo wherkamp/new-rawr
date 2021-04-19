@@ -12,6 +12,7 @@ use crate::structures::user::UserListing;
 use std::error::Error;
 use serde_json::Value;
 use std::str::FromStr;
+use async_trait::async_trait;
 
 /// The `Subreddit` struct represents a subreddit and allows access to post listings
 /// and data about the subreddit.
