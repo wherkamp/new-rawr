@@ -35,8 +35,8 @@ impl<'a> User<'a> {
     /// let user = client.user("Aurora0001").about().expect("User request failed");
     /// assert_eq!(user.id(), "eqyvc");
     /// ```
-    pub fn about(self) -> Result<UserAbout, APIError> {
-        UserAbout::new(self.client, self.name)
+    pub async fn about(self) -> Result<UserAbout, APIError> {
+        UserAbout::new(self.client, self.name).await
     }
 
     /// Gets a list of possible **user** flairs that can be added in this subreddit.
@@ -44,11 +44,11 @@ impl<'a> User<'a> {
     /// User flairs apply on a per-subreddit basis, and some may not permit user flairs at all.
     /// If you do not have the privileges to set the flair for this user, you will receive
     /// a 403 error.
-    pub fn flair_options(&self, subreddit: &str) -> Result<FlairList, APIError> {
+    pub async fn flair_options(&self, subreddit: &str) -> Result<FlairList, APIError> {
         let body = format!("user={}", self.name);
         let url = format!("/r/{}/api/flairselector", subreddit);
         let string = self.client
-            .post_json(&url, &body, false).unwrap();
+            .post_json(&url, &body, false).await.unwrap();
         let string: FlairSelectorResponse = serde_json::from_str(&*string).unwrap();
         Ok(FlairList::new(string.choices))
     }
@@ -58,12 +58,12 @@ impl<'a> User<'a> {
     /// - use the returned `FlairList` and call the method `find_text` which will return the
     /// template ID of the flair with the specified text.
     /// - iterate through the `FlairList`, and get the `FlairChoice.flair_template_id` value.
-    pub fn flair(&self, subreddit: &str, template: &str) -> Result<(), APIError> {
+    pub async fn flair(&self, subreddit: &str, template: &str) -> Result<(), APIError> {
         let body = format!("api_type=json&user={}&flair_template_id={}",
                            self.name,
                            template);
         let url = format!("/r/{}/api/selectflair", subreddit);
-        self.client.post_success(&url, &body, false)
+        self.client.post_success(&url, &body, false).await
     }
 
     /// Gets a list of *submissions* that the specified user has submitted. This endpoint is a
@@ -82,19 +82,19 @@ impl<'a> User<'a> {
     /// }
     /// assert_eq!(i, 5);
     /// ```
-    pub fn submissions(&self) -> Result<Listing, APIError> {
+    pub async fn submissions(&self) -> Result<Listing<'_>, APIError> {
         let url = format!("/user/{}/submitted?raw_json=1", self.name);
         let result = self.client
-            .get_json(&url, false).unwrap();
+            .get_json(&url, false).await.unwrap();
         let result: _Listing = serde_json::from_str(&*result).unwrap();
         Ok(Listing::new(self.client, url, result.data))
     }
     // TODO: implement comment, overview, gilded listings etc.
     ///Incomplete get comments
-    pub fn comments(&self) -> Result<CommentListing, APIError> {
+    pub async fn comments(&self) -> Result<CommentListing, APIError> {
         let url = format!("/user/{}/comments?raw_json=1", self.name);
         let result = self.client
-            .get_json(&url, false).unwrap();
+            .get_json(&url, false).await.unwrap();
         let result: CommentListing = serde_json::from_str(&*result).unwrap();
         //TODO make structure for Comments
         Ok(result)
@@ -109,9 +109,9 @@ pub struct UserAbout {
 
 impl UserAbout {
     /// Internal method. Use `RedditClient.user(NAME).about()` instead.
-    pub fn new(client: &RedditClient, name: String) -> Result<UserAbout, APIError> {
+    pub async fn new(client: &RedditClient, name: String) -> Result<UserAbout, APIError> {
         let url = format!("/user/{}/about?raw_json=1", name);
-        let result1 = client.get_json(&url, false);
+        let result1 = client.get_json(&url, false).await;
         if result1.is_err() {
             return Err(result1.err().unwrap());
         }
@@ -187,12 +187,12 @@ impl<'a> PageListing for UserListing<'a> {
 }
 
 impl<'a> UserListing<'a> {
-    fn fetch_after(&mut self) -> Result<UserListing<'a>, APIError> {
+    async fn fetch_after(&mut self) -> Result<UserListing<'a>, APIError> {
         match self.after() {
             Some(after_id) => {
                 let url = format!("{}&after={}", self.query_stem, after_id);
                 let string = self.client
-                    .get_json(&url, false).unwrap();
+                    .get_json(&url, false).await.unwrap();
                 let string: listing::UserListing = serde_json::from_str(&*string).unwrap();
                 Ok(UserListing::new(self.client, self.query_stem.to_owned(), string))
             }
@@ -201,21 +201,3 @@ impl<'a> UserListing<'a> {
     }
 }
 
-impl<'a> Iterator for UserListing<'a> {
-    type Item = User<'a>;
-    fn next(&mut self) -> Option<User<'a>> {
-        if self.data.children.is_empty() {
-            if self.after().is_none() {
-                None
-            } else {
-                let mut new_listing = self.fetch_after().expect("After does not exist!");
-                self.data.children.append(&mut new_listing.data.children);
-                self.data.after = new_listing.data.after;
-                self.next()
-            }
-        } else {
-            let child = self.data.children.drain(..1).next().unwrap();
-            Some(User::new(self.client, child.name.as_str()))
-        }
-    }
-}

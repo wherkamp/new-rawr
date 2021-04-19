@@ -106,7 +106,8 @@ impl RedditClient {
     /// If the token was revoked for another reason an error will be thrown in the code later.
     pub async fn ensure_authenticated(&self) {
         if self.get_authenticator().needs_token_refresh() {
-            self.get_authenticator().refresh_token(&self.client, &*self.user_agent).await;
+            let mut guard = self.get_authenticator();
+            guard.refresh_token(&self.client, &*self.user_agent);
         }
     }
 

@@ -39,28 +39,28 @@ impl<'a> Message<'a> {
     }
 
     /// Marks this message as read, so it will not show in the unread queue.
-    pub fn mark_read(&self) -> Result<(), APIError> {
+    pub async fn mark_read(&self) -> Result<(), APIError> {
         let body = format!("id={}", self.name());
-        self.client.post_success("/api/read_message", &body, false)
+        self.client.post_success("/api/read_message", &body, false).await
     }
 }
-
+#[async_trait]
 impl<'a> Commentable<'a> for Message<'a> {
     fn reply_count(&self) -> u64 {
         panic!("The Reddit API does not appear to return the reply count to messages, so this \
                 function is unavailable.");
     }
 
-    fn replies(self) -> Result<CommentList<'a>, APIError> {
+   async fn replies(self) -> Result<CommentList<'a>, APIError> {
         panic!("The Reddit API does not seem to return replies to messages as expected, so this \
                 function is unavailable.");
     }
 
-    fn reply(&self, text: &str) -> Result<Comment, APIError> {
+    async fn reply(&self, text: &str) -> Result<Comment, APIError> {
         let body = format!("api_type=json&text={}&thing_id={}",
                            self.client.url_escape(text.to_owned()),
                            self.name());
-        let result = self.client.post_json("/api/comment", &body, false).unwrap();
+        let result = self.client.post_json("/api/comment", &body, false).await.unwrap();
         let result :NewComment = serde_json::from_str(&*result).unwrap();
         Ok(Comment::new(self.client, result.json.data.things.into_iter().next().unwrap().data))
 
@@ -77,7 +77,7 @@ impl<'a> Created for Message<'a> {
         self.data.created_utc as i64
     }
 }
-
+#[async_trait]
 impl<'a> Content for Message<'a> {
     fn author(&self) -> User {
         let author = self.data.author.to_owned().unwrap_or(String::from("reddit"));
@@ -97,38 +97,38 @@ impl<'a> Content for Message<'a> {
         Subreddit::create_new(self.client, &subreddit)
     }
 
-    fn delete(self) -> Result<(), APIError> {
+    async fn delete(self) -> Result<(), APIError> {
         let body = format!("id={}", self.data.name);
-        self.client.post_success("/api/del_msg", &body, false)
+        self.client.post_success("/api/del_msg", &body, false).await
     }
 
     fn name(&self) -> &str {
         &self.data.name
     }
 }
-
+#[async_trait]
 impl<'a> Approvable for Message<'a> {
-    fn approve(&self) -> Result<(), APIError> {
+   async fn approve(&self) -> Result<(), APIError> {
         let body = format!("id={}", self.data.name);
-        self.client.post_success("/api/approve", &body, false)
+        self.client.post_success("/api/approve", &body, false).await
     }
 
-    fn remove(&self, spam: bool) -> Result<(), APIError> {
+    async fn remove(&self, spam: bool) -> Result<(), APIError> {
         let body = format!("id={}&spam={}", self.data.name, spam);
-        self.client.post_success("/api/remove", &body, false)
+        self.client.post_success("/api/remove", &body, false).await
     }
 
-    fn ignore_reports(&self) -> Result<(), APIError> {
+    async  fn ignore_reports(&self) -> Result<(), APIError> {
         let body = format!("id={}", self.data.name);
-        self.client.post_success("/api/ignore_reports", &body, false)
+        self.client.post_success("/api/ignore_reports", &body, false).await
     }
 
-    fn unignore_reports(&self) -> Result<(), APIError> {
+    async  fn unignore_reports(&self) -> Result<(), APIError> {
         let body = format!("id={}", self.data.name);
-        self.client.post_success("/api/unignore_reports", &body, false)
+        self.client.post_success("/api/unignore_reports", &body, false).await
     }
 }
-
+#[async_trait]
 impl<'a> Editable for Message<'a> {
     fn edited(&self) -> bool {
         panic!("Reddit does not provide access to the edit time for messages.");
@@ -138,11 +138,11 @@ impl<'a> Editable for Message<'a> {
         panic!("Reddit does not provide access to the edit time for messages.");
     }
 
-    fn edit(&mut self, text: &str) -> Result<(), APIError> {
+    async fn edit(&mut self, text: &str) -> Result<(), APIError> {
         let body = format!("api_type=json&text={}&thing_id={}",
                            self.client.url_escape(text.to_owned()),
                            self.data.name);
-        let res = self.client.post_success("/api/editusertext", &body, false);
+        let res = self.client.post_success("/api/editusertext", &body, false).await;
         if let Ok(()) = res {
             // TODO: should we update body_html?
             self.data.body = text.to_owned();
@@ -177,48 +177,33 @@ impl<'a> MessageInterface<'a> {
     /// let client = RedditClient::new("new_rawr", AnonymousAuthenticator::new());
     /// client.messages().compose("Aurora0001", "Test", "Hi!");
     // ```
-    pub fn compose(&self, recipient: &str, subject: &str, body: &str) -> Result<(), APIError> {
+    pub async fn compose(&self, recipient: &str, subject: &str, body: &str) -> Result<(), APIError> {
         let body = format!("api_type=json&subject={}&text={}&to={}", subject, body, recipient);
-        self.client.post_success("/api/compose", &body, false)
+        self.client.post_success("/api/compose", &body, false).await
     }
 
     /// Gets a list of all received messages that have not been deleted.
-    pub fn inbox(&self, opts: ListingOptions) -> Result<MessageListing<'a>, APIError> {
+    pub async fn inbox(&self, opts: ListingOptions) -> Result<MessageListing<'a>, APIError> {
         let uri = format!("/message/inbox?raw_json=1&limit={}", opts.batch);
         let full_uri = format!("{}&{}", uri, opts.anchor);
         let result = self.client
-            .get_json(&full_uri, false).unwrap();
+            .get_json(&full_uri, false).await.unwrap();
         let result :MessageListingData = serde_json::from_str(&*result).unwrap();
         Ok(MessageListing::new(self.client, uri, result.data))
     }
 
     /// Gets all messages that have **not** been marked as read.
-    pub fn unread(&self, opts: ListingOptions) -> Result<MessageListing<'a>, APIError> {
+    pub async fn unread(&self, opts: ListingOptions) -> Result<MessageListing<'a>, APIError> {
         let uri = format!("/message/unread?raw_json=1&limit={}", opts.batch);
         let full_uri = format!("{}&{}", uri, opts.anchor);
         let result = self.client
-            .get_json(&full_uri, false).unwrap();
+            .get_json(&full_uri, false).await.unwrap();
         let result :MessageListingData = serde_json::from_str(&*result).unwrap();
         Ok(MessageListing::new(self.client, uri, result.data))
 
     }
 
-    /// Gets a `MessageStream` of unread posts, marking each one as read after yielding it from
-    /// the iterator. This can be useful to monitor /u/username mentions, replies to comments/posts
-    /// and private messages.
-    /// # Examples
-    /// ```rust,no_run
-    ///
-    /// use new_rawr::auth::PasswordAuthenticator;
-    /// use new_rawr::client::RedditClient;
-    /// let client = RedditClient::new("new_rawr", PasswordAuthenticator::new("a", "b", "c", "d"));
-    /// for message in client.messages().unread_stream() {
-    ///     println!("New message received.");
-    /// }
-    /// ```
-    pub fn unread_stream(self) -> MessageStream<'a> {
-        MessageStream::new(&self.client, String::from("/message/unread?limit=5"))
-    }
+
 }
 
 // TODO: refactor Listing to cover this case too.
@@ -261,12 +246,12 @@ impl<'a> PageListing for MessageListing<'a> {
 }
 
 impl<'a> MessageListing<'a> {
-    fn fetch_after(&mut self) -> Result<MessageListing<'a>, APIError> {
+    async fn fetch_after(&mut self) -> Result<MessageListing<'a>, APIError> {
         match self.after() {
             Some(after_id) => {
                 let url = format!("{}&after={}", self.query_stem, after_id);
                 let string = self.client
-                    .get_json(&url, false).unwrap();
+                    .get_json(&url, false).await.unwrap();
                 let string:MessageListingData = serde_json::from_str(&*string).unwrap();
                 Ok(MessageListing::new(self.client, self.query_stem.to_owned(), string.data))
             }
@@ -275,81 +260,3 @@ impl<'a> MessageListing<'a> {
     }
 }
 
-impl<'a> Iterator for MessageListing<'a> {
-    type Item = Message<'a>;
-    fn next(&mut self) -> Option<Message<'a>> {
-        if self.data.children.is_empty() {
-            if self.after().is_none() {
-                None
-            } else {
-                let mut new_listing = self.fetch_after().expect("After does not exist!");
-                self.data.children.append(&mut new_listing.data.children);
-                self.data.after = new_listing.data.after;
-                self.next()
-            }
-        } else {
-            let child = self.data.children.drain(..1).next().unwrap();
-            Some(Message::new(self.client, child.data))
-        }
-    }
-}
-
-/// A stream of unread messages from oldest to newest. Before being yielded from this iterator,
-/// each message will be marked as read (and will not show up in the unread queue again).
-pub struct MessageStream<'a> {
-    client: &'a RedditClient,
-    current_iter: Option<IntoIter<Message<'a>>>,
-    url: String,
-}
-
-impl<'a> MessageStream<'a> {
-    /// Internal method. Use `Subreddit.new_stream()` instead.
-    pub fn new(client: &'a RedditClient, url: String) -> MessageStream<'a> {
-        MessageStream {
-            current_iter: None,
-            client: client,
-            url: url,
-        }
-    }
-}
-
-impl<'a> Iterator for MessageStream<'a> {
-    type Item = Message<'a>;
-    fn next(&mut self) -> Option<Message<'a>> {
-        if self.current_iter.is_some() {
-            let mut iter = self.current_iter.take().unwrap();
-            let next_iter = iter.next();
-            if next_iter.is_some() {
-                let res = next_iter.unwrap();
-                loop {
-                    // Loops until post is marked as read.
-                    if res.mark_read().is_ok() {
-                        thread::sleep(Duration::new(5, 0));
-                        break;
-                    }
-                }
-                self.current_iter = Some(iter);
-                Some(res)
-            } else {
-                self.next()
-            }
-        } else {
-            thread::sleep(Duration::new(5, 0));
-            let req: Result<String, APIError> = self.client.get_json(&self.url, false);
-            let current_iter = if let Ok(res) = req {
-                let req :MessageListingData = serde_json::from_str(&*res).unwrap();
-                Some(req.data
-                    .children
-                    .into_iter()
-                    .map(|i| Message::new(self.client, i.data))
-                    .rev()
-                    .collect::<Vec<Message<'a>>>()
-                    .into_iter())
-            } else {
-                None
-            };
-            self.current_iter = current_iter;
-            self.next()
-        }
-    }
-}

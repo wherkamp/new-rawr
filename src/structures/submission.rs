@@ -116,7 +116,7 @@ impl<'a> Content for Submission<'a> {
 
     async fn delete(self) -> Result<(), APIError> {
         let body = format!("id={}", self.data.name);
-        self.client.post_success("/api/del", &body, false)
+        self.client.post_success("/api/del", &body, false).await
     }
     fn name(&self) -> &str {
         &self.data.name
@@ -450,13 +450,13 @@ impl<'a> LazySubmission<'a> {
 
     /// Fetches the `Submission` with this ID, in order to access post title, body, link and
     /// creation time.
-    pub fn get(self) -> Result<Submission<'a>, APIError> {
+    pub async fn get(self) -> Result<Submission<'a>, APIError> {
         let url = format!("/by_id/{}?raw_json=1", self.id);
         let string = self.client
-            .get_json(&url, false).unwrap();
+            .get_json(&url, false).await.unwrap();
         let string: listing::Listing = serde_json::from_str(&*string).unwrap();
         let mut string = Listing::new(self.client, url, string.data);
-        Ok(string.next().unwrap())
+        Err(APIError::ExhaustedListing)
     }
 
     /// Fetches a `CommentList` with replies to this submission.

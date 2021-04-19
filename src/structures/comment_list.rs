@@ -148,27 +148,6 @@ impl<'a> CommentList<'a> {
             self.merge_comment(item, &mut orphans);
         }
     }
-    async fn next_comment(&mut self) -> Option<Comment<'a>> {
-        if self.comments.is_empty() {
-            if self.more.is_empty() {
-                None
-            } else {
-                // XXX: This code is hideous (see the fetch_more etc.) but it does work.
-                // TODO: refactor (carefully!)
-                let more_item = self.more.drain(..1).next().unwrap();
-                let mut new_listing = self.fetch_more(more_item).await.unwrap();
-                self.more.append(&mut new_listing.more);
-                // We've already consumed all of the items, so we can remove the mapping now.
-                self.comment_hashes = HashMap::new();
-                self.merge_more_comments(new_listing);
-                return self.next_comment().await
-            }
-        } else {
-            // Draining breaks the comment_hashes map!
-            let child = self.comments.drain(..1).next().unwrap();
-            Some(child)
-        }
-    }
 
     fn merge_comment(&mut self,
                      mut item: Comment<'a>,
