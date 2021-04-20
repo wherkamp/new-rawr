@@ -9,6 +9,7 @@ use crate::responses::comment::{CommentData};
 use crate::structures::user::User;
 use crate::structures::subreddit::Subreddit;
 use crate::responses::comment::{NewComment, CommentListing};
+use async_trait::async_trait;
 
 /// Structure representing a comment and its associated data (e.g. replies)
 pub struct Comment<'a> {
@@ -17,6 +18,7 @@ pub struct Comment<'a> {
     replies: CommentList<'a>,
 }
 
+#[async_trait]
 impl<'a> Votable for Comment<'a> {
     fn score(&self) -> i64 {
         self.data.score
@@ -26,16 +28,16 @@ impl<'a> Votable for Comment<'a> {
         self.data.likes
     }
 
-    fn upvote(&self) -> Result<(), APIError> {
-        self.vote(1)
+    async fn upvote(&self) -> Result<(), APIError> {
+        self.vote(1).await
     }
 
-    fn downvote(&self) -> Result<(), APIError> {
-        self.vote(-1)
+    async fn downvote(&self) -> Result<(), APIError> {
+        self.vote(-1).await
     }
 
-    fn cancel_vote(&self) -> Result<(), APIError> {
-        self.vote(0)
+    async fn cancel_vote(&self) -> Result<(), APIError> {
+        self.vote(0).await
     }
 }
 
@@ -49,6 +51,7 @@ impl<'a> Created for Comment<'a> {
     }
 }
 
+#[async_trait]
 impl<'a> Editable for Comment<'a> {
     fn edited(&self) -> bool {
         self.data.edited.as_bool().unwrap()
@@ -58,11 +61,11 @@ impl<'a> Editable for Comment<'a> {
         self.data.edited.as_i64()
     }
 
-    fn edit(&mut self, text: &str) -> Result<(), APIError> {
+    async fn edit(&mut self, text: &str) -> Result<(), APIError> {
         let body = format!("api_type=json&text={}&thing_id={}",
                            self.client.url_escape(text.to_owned()),
                            self.data.name);
-        let res = self.client.post_success("/api/editusertext", &body, false);
+        let res = self.client.post_success("/api/editusertext", &body, false).await;
         if let Ok(()) = res {
             // TODO: should we update body_html?
             self.data.body = text.to_owned();
@@ -79,6 +82,7 @@ impl<'a> Editable for Comment<'a> {
     }
 }
 
+#[async_trait]
 impl<'a> Content for Comment<'a> {
     fn author(&self) -> User {
         User::new(self.client, &self.data.author)
@@ -96,9 +100,9 @@ impl<'a> Content for Comment<'a> {
         Subreddit::create_new(self.client, &self.data.subreddit)
     }
 
-    fn delete(self) -> Result<(), APIError> {
+    async fn delete(self) -> Result<(), APIError> {
         let body = format!("id={}", self.data.name);
-        self.client.post_success("/api/del", &body, false)
+        self.client.post_success("/api/del", &body, false).await
     }
 
     fn name(&self) -> &str {
@@ -106,45 +110,46 @@ impl<'a> Content for Comment<'a> {
     }
 }
 
+#[async_trait]
 impl<'a> Approvable for Comment<'a> {
-    fn approve(&self) -> Result<(), APIError> {
+    async fn approve(&self) -> Result<(), APIError> {
         let body = format!("id={}", self.data.name);
-        self.client.post_success("/api/approve", &body, false)
+        self.client.post_success("/api/approve", &body, false).await
     }
 
-    fn remove(&self, spam: bool) -> Result<(), APIError> {
+    async fn remove(&self, spam: bool) -> Result<(), APIError> {
         let body = format!("id={}&spam={}", self.data.name, spam);
-        self.client.post_success("/api/remove", &body, false)
+        self.client.post_success("/api/remove", &body, false).await
     }
 
-    fn ignore_reports(&self) -> Result<(), APIError> {
+    async fn ignore_reports(&self) -> Result<(), APIError> {
         let body = format!("id={}", self.data.name);
-        self.client.post_success("/api/ignore_reports", &body, false)
+        self.client.post_success("/api/ignore_reports", &body, false).await
     }
 
-    fn unignore_reports(&self) -> Result<(), APIError> {
+    async fn unignore_reports(&self) -> Result<(), APIError> {
         let body = format!("id={}", self.data.name);
-        self.client.post_success("/api/unignore_reports", &body, false)
+        self.client.post_success("/api/unignore_reports", &body, false).await
     }
 }
 
+#[async_trait]
 impl<'a> Commentable<'a> for Comment<'a> {
     fn reply_count(&self) -> u64 {
         panic!("There is no effective way of getting the number of comment replies. You may have \
                 to manually count with `replies().len()`, which may take some time.");
     }
 
-    fn reply(&self, text: &str) -> Result<Comment, APIError> {
+    async fn reply(&self, text: &str) -> Result<Comment, APIError> {
         let body = format!("api_type=json&text={}&thing_id={}",
                            self.client.url_escape(text.to_owned()),
                            self.name());
-        let result = self.client.post_json("/api/comment", &body, false).unwrap();
+        let result = self.client.post_json("/api/comment", &body, false).await.unwrap();
         let result: NewComment = serde_json::from_str(&*result).unwrap();
         Ok(Comment::new(self.client, result.json.data.things.into_iter().next().unwrap().data))
-
     }
 
-    fn replies(self) -> Result<CommentList<'a>, APIError> {
+    async fn replies(self) -> Result<CommentList<'a>, APIError> {
         Ok(self.replies)
     }
 }
@@ -182,18 +187,19 @@ impl<'a> Comment<'a> {
         self.replies.add_reply(item);
     }
 
-    fn vote(&self, dir: i8) -> Result<(), APIError> {
+    async fn vote(&self, dir: i8) -> Result<(), APIError> {
         let body = format!("dir={}&id={}", dir, self.data.name);
-        self.client.post_success("/api/vote", &body, false)
+        self.client.post_success("/api/vote", &body, false).await
     }
 }
 
+#[async_trait]
 impl<'a> Reportable for Comment<'a> {
-    fn report(&self, reason: &str) -> Result<(), APIError> {
+    async fn report(&self, reason: &str) -> Result<(), APIError> {
         let body = format!("api_type=json&thing_id={}&reason={}",
                            self.data.name,
                            self.client.url_escape(reason.to_owned()));
-        self.client.post_success("/api/report", &body, false)
+        self.client.post_success("/api/report", &body, false).await
     }
 
     fn report_count(&self) -> Option<u64> {
@@ -201,23 +207,24 @@ impl<'a> Reportable for Comment<'a> {
     }
 }
 
+#[async_trait]
 impl<'a> Stickable for Comment<'a> {
     fn stickied(&self) -> bool {
         self.data.stickied
     }
 
-    fn stick(&mut self) -> Result<(), APIError> {
+    async fn stick(&mut self) -> Result<(), APIError> {
         let body = format!("api_type=json&how=yes&sticky=true&id={}", self.data.name);
-        let res = self.client.post_success("/api/distinguish", &body, false);
+        let res = self.client.post_success("/api/distinguish", &body, false).await;
         if let Ok(()) = res {
             self.data.stickied = true;
         }
         res
     }
 
-    fn unstick(&mut self) -> Result<(), APIError> {
+    async fn unstick(&mut self) -> Result<(), APIError> {
         let body = format!("api_type=json&how=no&id={}", self.data.name);
-        let res = self.client.post_success("/api/distinguish", &body, false);
+        let res = self.client.post_success("/api/distinguish", &body, false).await;
         if let Ok(()) = res {
             self.data.stickied = false;
         }
@@ -225,23 +232,24 @@ impl<'a> Stickable for Comment<'a> {
     }
 }
 
+#[async_trait]
 impl<'a> Distinguishable for Comment<'a> {
     fn distinguished(&self) -> Option<String> {
         self.data.distinguished.to_owned()
     }
 
-    fn distinguish(&mut self) -> Result<(), APIError> {
+    async fn distinguish(&mut self) -> Result<(), APIError> {
         let body = format!("api_type=json&how=yes&id={}", self.data.name);
-        let res = self.client.post_success("/api/distinguish", &body, false);
+        let res = self.client.post_success("/api/distinguish", &body, false).await;
         if let Ok(()) = res {
             self.data.distinguished = Some(String::from("moderator"));
         }
         res
     }
 
-    fn undistinguish(&mut self) -> Result<(), APIError> {
+    async fn undistinguish(&mut self) -> Result<(), APIError> {
         let body = format!("api_type=json&how=no&id={}", self.data.name);
-        let res = self.client.post_success("/api/distinguish", &body, false);
+        let res = self.client.post_success("/api/distinguish", &body, false).await;
         if let Ok(()) = res {
             self.data.distinguished = None;
         }

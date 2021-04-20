@@ -6,12 +6,12 @@ use crate::structures::listing::Listing;
 use crate::responses::listing;
 use crate::traits::Created;
 use crate::errors::APIError;
-use crate::structures::listing::PostStream;
 use hyper::Body;
 use crate::structures::user::UserListing;
 use std::error::Error;
 use serde_json::Value;
 use std::str::FromStr;
+use async_trait::async_trait;
 
 /// The `Subreddit` struct represents a subreddit and allows access to post listings
 /// and data about the subreddit.
@@ -28,13 +28,13 @@ impl<'a> PartialEq for Subreddit<'a> {
 }
 
 impl<'a> Subreddit<'a> {
-    fn get_feed(&self, ty: &str, opts: ListingOptions) -> Result<Listing, APIError> {
+    async fn get_feed(&self, ty: &str, opts: ListingOptions) -> Result<Listing<'_>, APIError> {
         // We do not include the after/before parameter here so the pagination can adjust it later
         // on.
         let uri = format!("/r/{}/{}limit={}&raw_json=1", self.name, ty, opts.batch);
         let full_uri = format!("{}&{}", uri, opts.anchor);
         let string = self.client
-            .get_json(&full_uri, false).unwrap();
+            .get_json(&full_uri, false).await.unwrap();
         let string: listing::Listing = serde_json::from_str(&*string).unwrap();
         Ok(Listing::new(self.client, uri, string.data))
     }
@@ -59,27 +59,11 @@ impl<'a> Subreddit<'a> {
     /// let sub = client.subreddit("askreddit");
     /// let hot = sub.hot(ListingOptions::default());
     /// ```
-    pub fn hot(&self, opts: ListingOptions) -> Result<Listing, APIError> {
-        self.get_feed("hot?", opts)
+    pub async fn hot(&self, opts: ListingOptions) -> Result<Listing<'_>, APIError> {
+        self.get_feed("hot?", opts).await
     }
 
-    /// Gets a `PostStream` of the new posts in the subreddit. The iterator will yield values
-    /// forever, unless it is manually ended at some point. For tips, check the `PostStream` class.
-    /// # Examples
-    /// ```no_run
-    ///
-    /// use new_rawr::auth::AnonymousAuthenticator;
-    /// use new_rawr::client::RedditClient;
-    /// let client = RedditClient::new("new_rawr", AnonymousAuthenticator::new());
-    /// let askreddit = client.subreddit("askreddit");
-    /// for post in askreddit.new_stream() {
-    ///
-    /// }
-    /// ```
-    pub fn new_stream(self) -> PostStream<'a> {
-        let url = format!("/r/{}/new?limit=5", self.name);
-        PostStream::new(&self.client, url)
-    }
+
 
     /// Gets a listing of the new feed for this subreddit.
     /// # Examples
@@ -93,8 +77,8 @@ impl<'a> Subreddit<'a> {
     /// let mut new = sub.new(ListingOptions::default()).expect("Could not get new feed");
     /// assert_eq!(new.next().unwrap().subreddit().name, "programming");
     /// ```
-    pub fn new(&self, opts: ListingOptions) -> Result<Listing, APIError> {
-        self.get_feed("new?", opts)
+    pub async fn new(&self, opts: ListingOptions) -> Result<Listing<'_>, APIError> {
+        self.get_feed("new?", opts).await
     }
 
     /// Gets a listing of the rising feed for this subreddit. Usually much shorter than the other
@@ -109,8 +93,8 @@ impl<'a> Subreddit<'a> {
     /// let rising = sub.rising(ListingOptions::default()).unwrap();
     /// assert_eq!(rising.count(), 0);
     /// ```
-    pub fn rising(&self, opts: ListingOptions) -> Result<Listing, APIError> {
-        self.get_feed("rising?", opts)
+    pub async fn rising(&self, opts: ListingOptions) -> Result<Listing<'_>, APIError> {
+        self.get_feed("rising?", opts).await
     }
 
 
@@ -128,20 +112,20 @@ impl<'a> Subreddit<'a> {
     ///     .expect("Request failed");
     /// assert_eq!(top.next().unwrap().title(), "Thanks Me");
     /// ```
-    pub fn top(&self, opts: ListingOptions, time: TimeFilter) -> Result<Listing, APIError> {
+    pub async fn top(&self, opts: ListingOptions, time: TimeFilter) -> Result<Listing<'_>, APIError> {
         let path = format!("top?{}&", time);
-        self.get_feed(&path, opts)
+        self.get_feed(&path, opts).await
     }
 
     /// Gets a listing of the controversial feed for this subreddit. Also requires a time filter (
     /// `new_rawr::options::TimeFilter`) which is equivalent to the "links from: all time" dropdown
     /// on the website.
-    pub fn controversial(&self,
+    pub async fn controversial(&self,
                          opts: ListingOptions,
                          time: TimeFilter)
-                         -> Result<Listing, APIError> {
+                         -> Result<Listing<'_>, APIError> {
         let path = format!("controversial?{}&", time);
-        self.get_feed(&path, opts)
+        self.get_feed(&path, opts).await
     }
 
     /// Submits a link post to this subreddit using the specified parameters. If the link has
@@ -162,14 +146,14 @@ impl<'a> Subreddit<'a> {
     /// let post = LinkPost::new("new_rawr!", "http://example.com");
     /// sub.submit_link(post).expect("Posting failed!");
     /// ```
-    pub fn submit_link(&self, post: LinkPost) -> Result<(), APIError> {
+    pub async fn submit_link(&self, post: LinkPost) -> Result<(), APIError> {
         let body = format!("api_type=json&extension=json&kind=link&resubmit={}&sendreplies=true&\
                             sr={}&title={}&url={}",
                            post.resubmit,
                            self.name,
                            self.client.url_escape(post.title.to_owned()),
                            self.client.url_escape(post.link.to_owned()));
-        self.client.post_success("/api/submit", &body, false)
+        self.client.post_success("/api/submit", &body, false).await
     }
 
     /// Submits a text post (self post) to this subreddit using the specified title and body.
@@ -184,19 +168,19 @@ impl<'a> Subreddit<'a> {
     /// let post = SelfPost::new("I love new_rawr!", "You should download it *right now*!");
     /// sub.submit_text(post).expect("Posting failed!");
     /// ```
-    pub fn submit_text(&self, post: SelfPost) -> Result<(), APIError> {
+    pub async fn submit_text(&self, post: SelfPost) -> Result<(), APIError> {
         let body = format!("api_type=json&extension=json&kind=self&sendreplies=true&sr={}\
                             &title={}&text={}",
                            self.name,
                            self.client.url_escape(post.title),
                            self.client.url_escape(post.text));
-        self.client.post_success("/api/submit", &body, false)
+        self.client.post_success("/api/submit", &body, false).await
     }
     /// Invites a new member to the subreddit.
-    pub fn invite_member(&self, username: String) -> Result<bool, APIError> {
+    pub async fn invite_member(&self, username: String) -> Result<bool, APIError> {
         let path = format!("/r/{}/api/friend", self.name);
         let body = format!("name={}&type=contributor", username);
-        let result = self.client.post_json(&*path, &body, false);
+        let result = self.client.post_json(&*path, &body, false).await;
         if result.is_err() {
             return Err(result.err().unwrap());
         }
@@ -216,19 +200,19 @@ impl<'a> Subreddit<'a> {
     ///     .expect("Could not fetch 'about' data");
     /// assert_eq!(learn_programming.display_name(), "learnprogramming");
     /// ```
-    pub fn about(&self) -> Result<SubredditAbout, APIError> {
+    pub async fn about(&self) -> Result<SubredditAbout, APIError> {
         let url = format!("/r/{}/about?raw_json=1", self.name);
 
         let string = self.client
-            .get_json(&url, false).unwrap();
+            .get_json(&url, false).await.unwrap();
         let string: listing::SubredditAboutData = serde_json::from_str(&*string).unwrap();
         Ok(SubredditAbout::new(string))
     }
     ///  Get users
-    pub fn contributors(&self) -> Result<UserListing, APIError> {
+    pub async fn contributors(&self) -> Result<UserListing<'a>, APIError> {
         let url = format!("/r/{}/about/contributors?raw_json=1", self.name);
         let string = self.client
-            .get_json(&url, false).unwrap();
+            .get_json(&url, false).await.unwrap();
         let json: Result<listing::UserListing, serde_json::Error> = serde_json::from_str(string.as_str());
         if json.is_err() {
             println!("{}", &json.err().unwrap().to_string());
@@ -239,16 +223,16 @@ impl<'a> Subreddit<'a> {
     }
     /// Subscribes to the specified subredit, returning the result to show whether the API call
     /// succeeded or not.
-    pub fn subscribe(&self) -> Result<(), APIError> {
+    pub async fn subscribe(&self) -> Result<(), APIError> {
         let body = format!("action=sub&sr_name={}", self.name);
-        self.client.post_success("/api/subscribe", &body, false)
+        self.client.post_success("/api/subscribe", &body, false).await
     }
 
     /// Unsubscribes to the specified subreddit, returning the result to show whether the API call
     /// succeeded or not.
-    pub fn unsubscribe(&self) -> Result<(), APIError> {
+    pub async fn unsubscribe(&self) -> Result<(), APIError> {
         let body = format!("action=unsub&sr_name={}", self.name);
-        self.client.post_success("/api/subscribe", &body, false)
+        self.client.post_success("/api/subscribe", &body, false).await
     }
 }
 
